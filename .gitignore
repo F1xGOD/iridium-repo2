@@ -2,4 +2,5 @@
 /qemu
 /out
 /chroots
-/website/debian
+/website/iridium
+/keys/

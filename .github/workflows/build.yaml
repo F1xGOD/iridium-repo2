@@ -1,7 +1,5 @@
 on:
-  push:
-  schedule:
-    - cron: '0 0 * * 0'
+  workflow_dispatch:
     
 jobs:
   build_systemd:
@@ -33,8 +31,12 @@ jobs:
           release="$(echo ${{ matrix.release_name }} | cut -d'_' -f2)"
           [ "$(uname -m)" = "x86_64" ] && arch="amd64" || arch="arm64"
           sudo DEBUG=1 ./build_systemd.sh $distro $release $arch
-          mkdir -p out/${release}_${arch}
-          cp build/*.deb out/${release}_${arch}
+          target_release="$release"
+          if [ "$target_release" = "trixie" ]; then
+            target_release="osaka"
+          fi
+          mkdir -p out/${target_release}_${arch}
+          cp build/*.deb out/${target_release}_${arch}
       
       - name: Upload artifact
         uses: actions/upload-artifact@master
@@ -74,11 +76,11 @@ jobs:
             mkdir -p out/noble_$arch
             mkdir -p out/jammy_$arch
             mkdir -p out/bookworm_$arch
-            mkdir -p out/trixie_$arch
+            mkdir -p out/osaka_$arch
             cp build/*.deb out/noble_$arch
             cp build/*.deb out/jammy_$arch
             cp build/*.deb out/bookworm_$arch
-            cp build/*.deb out/trixie_$arch
+            cp build/*.deb out/osaka_$arch
           fi
           
       - name: Upload artifact
@@ -99,6 +101,7 @@ jobs:
 
       - name: Install deps
         run: |
+          sudo apt-get update
           sudo apt-get install -y dpkg-dev
 
       - name: Setup directories 
@@ -116,9 +119,9 @@ jobs:
         run: |
           DEBUG=1 ./build_repo.sh
           mkdir -p website
-          mv repo/ website/debian/
+          mv repo/ website/iridium/
           ./generate_index.sh
-      
+
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/pages-action@v1
         with:
@@ -126,11 +129,3 @@ jobs:
           accountId: b8079ffa92c97010f2a8d759e24cc782
           projectName: shimboot
           directory: website
-
-  workflow-keepalive:
-    if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-    steps:
-      - uses: liskin/gh-workflow-keepalive@v1
