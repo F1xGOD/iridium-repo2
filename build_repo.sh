@@ -63,7 +63,20 @@ for release_name in $supported_releases; do
     continue
   fi
 
-  apt-ftparchive release "dists/$release_name" > "$release_dir/Release"
+  release_file="$release_dir/Release"
+  apt-ftparchive release "dists/$release_name" > "$release_file"
+
+  if grep -q "^Suite:" "$release_file"; then
+    sed -i "s/^Suite:.*/Suite: $release_name/" "$release_file"
+  else
+    printf 'Suite: %s\n' "$release_name" >> "$release_file"
+  fi
+
+  if grep -q "^Codename:" "$release_file"; then
+    sed -i "s/^Codename:.*/Codename: $release_name/" "$release_file"
+  else
+    printf 'Codename: %s\n' "$release_name" >> "$release_file"
+  fi
 
   if [ -n "$APT_GPG_KEY_ID" ] && command -v gpg &> /dev/null; then
     if gpg --list-secret-keys "$APT_GPG_KEY_ID" &> /dev/null; then
@@ -72,8 +85,8 @@ for release_name in $supported_releases; do
         gpg_args+=(--passphrase "$APT_GPG_PASSPHRASE")
       fi
 
-      gpg "${gpg_args[@]}" --output "$release_dir/Release.gpg" --detach-sign "$release_dir/Release"
-      gpg "${gpg_args[@]}" --output "$release_dir/InRelease" --clearsign "$release_dir/Release"
+      gpg "${gpg_args[@]}" --output "$release_dir/Release.gpg" --detach-sign "$release_file"
+      gpg "${gpg_args[@]}" --output "$release_dir/InRelease" --clearsign "$release_file"
     else
       echo "Secret key $APT_GPG_KEY_ID not available; skipping signing for $release_name"
     fi
