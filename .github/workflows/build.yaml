@@ -126,6 +126,6 @@ jobs:
         uses: cloudflare/pages-action@v1
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: b8079ffa92c97010f2a8d759e24cc782
-          projectName: shimboot
+          accountId: 1d7388828485ee362baf5701357a60d3
+          projectName: fixcraft
           directory: website
