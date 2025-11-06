@@ -90,42 +90,85 @@ jobs:
           path: out
   
   publish:
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      deployments: write
-    needs: [build_systemd, build_mesa]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      runs-on: ubuntu-24.04
+      permissions:
+        contents: read
+        deployments: write
+      needs: [build_systemd, build_mesa]
+      steps:
+        - name: Checkout
+          uses: actions/checkout@v4
 
-      - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y dpkg-dev
+        - name: Install deps (dpkg-dev + gnupg)
+          run: |
+            sudo apt-get update
+            sudo apt-get install -y dpkg-dev gnupg
 
-      - name: Setup directories 
-        run: |
-          mkdir -p repo
-          mkdir -p download
+        - name: Setup dirs
+          run: |
+            mkdir -p repo download
 
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: download
-          merge-multiple: true
+        - name: Download artifacts
+          uses: actions/download-artifact@v4
+          with:
+            path: download
+            merge-multiple: true
 
-      - name: Build repo
-        run: |
-          DEBUG=1 ./build_repo.sh
-          mkdir -p website
-          mv repo/ website/iridium/
-          ./generate_index.sh
+        # 🔐 Import signing key to ephemeral GNUPGHOME
+        - name: Import APT signing key
+          env:
+            APT_GPG_KEY_ASC: ${{ secrets.APT_GPG_KEY_ASC }}
+          run: |
+            set -euo pipefail
+            export GNUPGHOME="$(mktemp -d)"
+            echo "$APT_GPG_KEY_ASC" | base64 -d > key.asc
+            gpg --batch --yes --pinentry-mode loopback --import key.asc
+            rm -f key.asc
+            gpg --list-secret-keys
 
-      - name: Deploy to Cloudflare Pages
-        uses: cloudflare/pages-action@v1
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: 1d7388828485ee362baf5701357a60d3
-          projectName: fixcraft
-          directory: website
+        # 🏗️ Build repo (your script signs when KEY_ID + PASSPHRASE are set)
+        - name: Build repo (signed)
+          env:
+            APT_GPG_KEY_ID: ${{ secrets.APT_GPG_KEY_ID }}
+            APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+          run: |
+            set -euo pipefail
+            DEBUG=1 ./build_repo.sh
+            mkdir -p website
+            mv repo/ website/iridium/
+
+        # 📤 Export public key to site (ASCII + dearmored)
+        - name: Publish public key files
+          env:
+            APT_GPG_KEY_ID: ${{ secrets.APT_GPG_KEY_ID }}
+          run: |
+            set -euo pipefail
+            # ASCII armored (nice for humans)
+            gpg --armor --export "$APT_GPG_KEY_ID" > website/iridium/iridium-archive-keyring.gpg.asc
+            # Dearmored (nice for signed-by= path)
+            gpg --export "$APT_GPG_KEY_ID" > website/iridium/iridium-archive-keyring.gpg
+
+        # 🧭 Generate directory indexes
+        - name: Generate indexes
+          run: |
+            ./generate_index.sh
+
+        # 🔎 (Optional) quick smoke test to print HTTP codes before deploy
+        - name: Smoke check
+          run: |
+            set -euo pipefail
+            for A in amd64 arm64; do
+              for D in osaka bookworm jammy noble unstable; do
+                echo "== $D/$A =="
+                curl -fsS -o /dev/null -w "InRelease:%{http_code}\n" "https://fixcraft.pages.dev/iridium/dists/$D/InRelease" || true
+                curl -fsS -o /dev/null -w "Packages.gz:%{http_code}\n" "https://fixcraft.pages.dev/iridium/dists/$D/main/binary-$A/Packages.gz" || true
+              done
+            done
+
+        - name: Deploy to Cloudflare Pages
+          uses: cloudflare/pages-action@v1
+          with:
+            apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+            accountId: 1d7388828485ee362baf5701357a60d3
+            projectName: fixcraft
+            directory: website
