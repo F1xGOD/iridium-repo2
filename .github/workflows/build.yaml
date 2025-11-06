@@ -159,15 +159,21 @@ jobs:
             DEBUG=1 ./build_repo.sh
             mv repo/ website/iridium/
 
-        # 📤 Export PUBLIC key to website (from the SAME GNUPGHOME)
+        # 📤 Export public key files to the website
         - name: Publish public key files
           env:
-            APT_GPG_KEY_ID: ${{ steps.gpg.outputs.keyid }}
+            APT_GPG_KEY_ID: ${{ steps.gpg.outputs.keyid }}   # or use your secrets var
           run: |
             set -euo pipefail
+            mkdir -p website/iridium
             gpg --list-secret-keys "$APT_GPG_KEY_ID" >/dev/null
+            # ASCII armored (for humans / curl)
             gpg --armor --export "$APT_GPG_KEY_ID" > website/iridium/iridium-archive-keyring.gpg.asc
+            # Dearmored (for apt signed-by=)
             gpg --export "$APT_GPG_KEY_ID" > website/iridium/iridium-archive-keyring.gpg
+            # Optional: print fingerprint into a text for quick eyes
+            gpg --with-colons --fingerprint "$APT_GPG_KEY_ID" \
+              | awk -F: '/^fpr:/{print $10; exit}' > website/iridium/iridium-archive-keyring.fpr
 
         # ✅ Sanity: ensure InRelease exists BEFORE deploy
         - name: Sanity check signed metadata
