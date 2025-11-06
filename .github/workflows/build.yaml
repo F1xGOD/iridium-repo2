@@ -95,18 +95,19 @@ jobs:
         contents: read
         deployments: write
       needs: [build_systemd, build_mesa]
+
       steps:
         - name: Checkout
           uses: actions/checkout@v4
 
-        - name: Install deps (dpkg-dev + gnupg)
+        - name: Install deps (dpkg-dev + gnupg + curl)
           run: |
             sudo apt-get update
-            sudo apt-get install -y dpkg-dev gnupg
+            sudo apt-get install -y dpkg-dev gnupg curl
 
         - name: Setup dirs
           run: |
-            mkdir -p repo download
+            mkdir -p repo download website
 
         - name: Download artifacts
           uses: actions/download-artifact@v4
@@ -114,56 +115,71 @@ jobs:
             path: download
             merge-multiple: true
 
-        # 🔐 Import signing key to ephemeral GNUPGHOME
+        # 🔐 Persist GNUPGHOME across ALL next steps
+        - name: Init persistent GNUPGHOME
+          run: |
+            echo "GNUPGHOME=$RUNNER_TEMP/.gnupg-fixcraft" >> "$GITHUB_ENV"
+            mkdir -p "$RUNNER_TEMP/.gnupg-fixcraft"
+            chmod 700 "$RUNNER_TEMP/.gnupg-fixcraft"
+
+        # 🔐 Import APT signing key (into persistent GNUPGHOME)
         - name: Import APT signing key
           env:
             APT_GPG_KEY_ASC: ${{ secrets.APT_GPG_KEY_ASC }}
           run: |
             set -euo pipefail
-            export GNUPGHOME="$(mktemp -d)"
             echo "$APT_GPG_KEY_ASC" | base64 -d > key.asc
             gpg --batch --yes --pinentry-mode loopback --import key.asc
             rm -f key.asc
+            echo "[i] Secret keys:"
             gpg --list-secret-keys
 
-        # 🏗️ Build repo (your script signs when KEY_ID + PASSPHRASE are set)
+        # 🧾 (Optional) derive KEYID from imported key if you don't trust the secret
+        - name: Derive APT_GPG_KEY_ID if missing
+          id: gpg
+          shell: bash
+          run: |
+            set -euo pipefail
+            KEYID_INPUT="${{ secrets.APT_GPG_KEY_ID }}"
+            if [ -n "$KEYID_INPUT" ]; then
+              echo "keyid=$KEYID_INPUT" >> "$GITHUB_OUTPUT"
+            else
+              KEYID="$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')"
+              echo "keyid=$KEYID" >> "$GITHUB_OUTPUT"
+            fi
+            echo "[i] Using KEYID: $(cat $GITHUB_OUTPUT | sed -n 's/keyid=//p')"
+
+        # 🏗️ Build repo (SIGNED) — uses the SAME GNUPGHOME
         - name: Build repo (signed)
           env:
-            APT_GPG_KEY_ID: ${{ secrets.APT_GPG_KEY_ID }}
+            APT_GPG_KEY_ID: ${{ steps.gpg.outputs.keyid }}
             APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
           run: |
             set -euo pipefail
             DEBUG=1 ./build_repo.sh
-            mkdir -p website
             mv repo/ website/iridium/
 
-        # 📤 Export public key to site (ASCII + dearmored)
+        # 📤 Export PUBLIC key to website (from the SAME GNUPGHOME)
         - name: Publish public key files
           env:
-            APT_GPG_KEY_ID: ${{ secrets.APT_GPG_KEY_ID }}
+            APT_GPG_KEY_ID: ${{ steps.gpg.outputs.keyid }}
           run: |
             set -euo pipefail
-            # ASCII armored (nice for humans)
+            gpg --list-secret-keys "$APT_GPG_KEY_ID" >/dev/null
             gpg --armor --export "$APT_GPG_KEY_ID" > website/iridium/iridium-archive-keyring.gpg.asc
-            # Dearmored (nice for signed-by= path)
             gpg --export "$APT_GPG_KEY_ID" > website/iridium/iridium-archive-keyring.gpg
 
-        # 🧭 Generate directory indexes
-        - name: Generate indexes
-          run: |
-            ./generate_index.sh
-
-        # 🔎 (Optional) quick smoke test to print HTTP codes before deploy
-        - name: Smoke check
+        # ✅ Sanity: ensure InRelease exists BEFORE deploy
+        - name: Sanity check signed metadata
           run: |
             set -euo pipefail
-            for A in amd64 arm64; do
-              for D in osaka bookworm jammy noble unstable; do
-                echo "== $D/$A =="
-                curl -fsS -o /dev/null -w "InRelease:%{http_code}\n" "https://fixcraft.pages.dev/iridium/dists/$D/InRelease" || true
-                curl -fsS -o /dev/null -w "Packages.gz:%{http_code}\n" "https://fixcraft.pages.dev/iridium/dists/$D/main/binary-$A/Packages.gz" || true
-              done
-            done
+            test -s website/iridium/dists/osaka/InRelease
+            echo "[OK] InRelease present"
+            # optional: peek first lines
+            head -n 12 website/iridium/dists/osaka/Release
+
+        - name: Generate indexes
+          run: ./generate_index.sh
 
         - name: Deploy to Cloudflare Pages
           uses: cloudflare/pages-action@v1
